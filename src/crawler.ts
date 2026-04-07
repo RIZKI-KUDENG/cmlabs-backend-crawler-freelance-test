@@ -11,18 +11,82 @@ export async function crawl(url: string, filename: string) {
     await page.goto(url, { waitUntil: "networkidle0", timeout: 90000 });
     await new Promise((res) => setTimeout(res, 3000));
 
-    const tabInfo = await page.evaluate(() => ({
-      radix: document.querySelectorAll('[role="tab"]').length,
-      inactive: document.querySelectorAll('[role="tab"][data-state="inactive"]').length,
-      ariaNotSelected: document.querySelectorAll('[role="tab"]:not([aria-selected="true"])').length,
-      hidden: document.querySelectorAll('[hidden]').length,
-    }));
-    console.log(`[${url}] Tab info:`, tabInfo);
-
     await crawlSmart(page, url);
+
     await page.evaluate(() => {
       document.querySelectorAll('script').forEach(el => el.remove());
       document.querySelectorAll('link[as="script"]').forEach(el => el.remove());
+
+      const script = document.createElement('script');
+      script.innerHTML = `
+        document.addEventListener('DOMContentLoaded', () => {
+          // Logic untuk Radix Tabs
+          document.querySelectorAll('[role="tab"]').forEach(tab => {
+            tab.addEventListener('click', (e) => {
+              const clickedTab = e.currentTarget;
+              const tabList = clickedTab.closest('[role="tablist"]');
+              if (!tabList) return;
+
+              // Matikan semua tab di list yang sama
+              tabList.querySelectorAll('[role="tab"]').forEach(t => {
+                t.setAttribute('aria-selected', 'false');
+                t.setAttribute('data-state', 'inactive');
+                t.classList.remove('text-[#E6C9A8]', 'border-b-2', 'border-[#E6C9A8]');
+              });
+
+              // Hidupkan tab yang diklik
+              clickedTab.setAttribute('aria-selected', 'true');
+              clickedTab.setAttribute('data-state', 'active');
+              clickedTab.classList.add('text-[#E6C9A8]', 'border-b-2', 'border-[#E6C9A8]');
+
+              // Sembunyikan panel yang lama
+              tabList.querySelectorAll('[role="tab"]').forEach(t => {
+                const pId = t.getAttribute('aria-controls');
+                if (pId) {
+                  const panel = document.getElementById(pId);
+                  if (panel) {
+                    panel.setAttribute('data-state', 'inactive');
+                    panel.hidden = true;
+                  }
+                }
+              });
+
+              // Tampilkan panel yang sesuai
+              const targetId = clickedTab.getAttribute('aria-controls');
+              if (targetId) {
+                const targetPanel = document.getElementById(targetId);
+                if (targetPanel) {
+                  targetPanel.setAttribute('data-state', 'active');
+                  targetPanel.hidden = false;
+                }
+              }
+            });
+          });
+
+          // Logic untuk Mobile Accordion
+          document.querySelectorAll('button[aria-controls]:not([role="tab"])').forEach(btn => {
+            btn.addEventListener('click', () => {
+              const targetId = btn.getAttribute('aria-controls');
+              const target = document.getElementById(targetId);
+              if (!target) return;
+              
+              const isExpanded = btn.getAttribute('aria-expanded') === 'true';
+              btn.setAttribute('aria-expanded', !isExpanded);
+              
+              if (!isExpanded) {
+                target.hidden = false;
+                target.setAttribute('data-state', 'open');
+                btn.setAttribute('data-state', 'open');
+              } else {
+                target.hidden = true;
+                target.setAttribute('data-state', 'closed');
+                btn.setAttribute('data-state', 'closed');
+              }
+            });
+          });
+        });
+      `;
+      document.body.appendChild(script);
     });
 
     const html = await page.content();
@@ -59,48 +123,68 @@ async function crawlSmart(page: any, url: string) {
 async function clickAllTabs(page: any) {
   const clicked = await page.evaluate(async () => {
     let count = 0;
+    const allTabs = document.querySelectorAll('[role="tab"]');
+    
+    const initialActiveTab = document.querySelector('[role="tab"][aria-selected="true"]');
+    const initialActivePanelId = initialActiveTab?.getAttribute('aria-controls');
 
-    const selectors = [
-      '[role="tab"][data-state="inactive"]',
-      '[role="tab"]:not([aria-selected="true"])',
-      '[data-state="closed"] button[aria-expanded="false"]',
-      '.nav-link:not(.active)',
-      '[role="tab"]:not(.Mui-selected)',
-      '[role="tabpanel"][hidden]',
-    ];
+    for (const el of Array.from(allTabs)) {
+      const tab = el as HTMLElement;
+      tab.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+      tab.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      tab.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      tab.click();
 
-    for (const selector of selectors) {
-      const elements = document.querySelectorAll(selector);
-      for (const el of elements) {
-        const rect = el.getBoundingClientRect();
-        if (rect.width === 0 || rect.height === 0) continue;
-        if (el.tagName.toLowerCase() === 'a') {
-          const href = el.getAttribute('href');
-          if (href && !href.startsWith('#') && !href.startsWith('javascript:')) {
-            continue;
-          }
+      await new Promise((r) => setTimeout(r, 800));
+
+      const panelId = tab.getAttribute('aria-controls');
+      if (panelId) {
+        const panel = document.getElementById(panelId);
+        if (panel && panel.innerHTML.trim() !== '') {
+          panel.setAttribute('data-saved-content', panel.innerHTML);
         }
-
-        (el as HTMLElement).click();
-        await new Promise((r) => setTimeout(r, 600));
-        count++;
       }
+      count++;
     }
 
-    const accordions = document.querySelectorAll(
-      'details:not([open]), [data-headlessui-state=""] button'
-    );
-    for (const el of accordions) {
+    const panels = document.querySelectorAll('[role="tabpanel"]');
+    panels.forEach(panel => {
+      const savedContent = panel.getAttribute('data-saved-content');
+      if (savedContent) {
+        panel.innerHTML = savedContent;
+      }
+      
+      if (panel.id === initialActivePanelId) {
+        panel.removeAttribute('hidden');
+        panel.setAttribute('data-state', 'active');
+      } else {
+        panel.setAttribute('hidden', '');
+        panel.setAttribute('data-state', 'inactive');
+      }
+    });
+
+    allTabs.forEach(tab => {
+      if (tab.getAttribute('aria-controls') === initialActivePanelId) {
+        tab.setAttribute('aria-selected', 'true');
+        tab.setAttribute('data-state', 'active');
+      } else {
+        tab.setAttribute('aria-selected', 'false');
+        tab.setAttribute('data-state', 'inactive');
+      }
+    });
+
+    const accordions = document.querySelectorAll('button[aria-controls]:not([role="tab"])');
+    for (const el of Array.from(accordions)) {
+      el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
       (el as HTMLElement).click();
-      await new Promise((r) => setTimeout(r, 300));
+      await new Promise((r) => setTimeout(r, 400));
       count++;
     }
 
     return count;
   });
 
-  console.log(`Clicked ${clicked} interactive elements`);
-  await new Promise((res) => setTimeout(res, 1500));
+  console.log(`Processed ${clicked} tabs & accordions.`);
 }
 
 async function autoScroll(page: any) {
@@ -122,11 +206,7 @@ async function autoScroll(page: any) {
 }
 
 function fixNextJsHtml(html: string, baseUrl: string): string {
-  const unHidden = html
-    .replace(/(<div[^>]*role="tabpanel"[^>]*)\shidden=""/g, "$1")
-    .replace(/data-state="inactive"/g, 'data-state="active"');
-
-  return unHidden
+  return html
     .replace(/\/_next\//g, `${baseUrl}/_next/`)
     .replace(/src="\/(?!\/)(.*?)"/g, `src="${baseUrl}/$1"`)
     .replace(/href="\/(?!\/|#)(.*?)"/g, `href="${baseUrl}/$1"`)
