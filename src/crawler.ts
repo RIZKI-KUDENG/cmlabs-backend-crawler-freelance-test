@@ -20,6 +20,10 @@ export async function crawl(url: string, filename: string) {
     console.log(`[${url}] Tab info:`, tabInfo);
 
     await crawlSmart(page, url);
+    await page.evaluate(() => {
+      document.querySelectorAll('script').forEach(el => el.remove());
+      document.querySelectorAll('link[as="script"]').forEach(el => el.remove());
+    });
 
     const html = await page.content();
     const baseUrl = new URL(url).origin;
@@ -70,6 +74,13 @@ async function clickAllTabs(page: any) {
       for (const el of elements) {
         const rect = el.getBoundingClientRect();
         if (rect.width === 0 || rect.height === 0) continue;
+        if (el.tagName.toLowerCase() === 'a') {
+          const href = el.getAttribute('href');
+          if (href && !href.startsWith('#') && !href.startsWith('javascript:')) {
+            continue;
+          }
+        }
+
         (el as HTMLElement).click();
         await new Promise((r) => setTimeout(r, 600));
         count++;
